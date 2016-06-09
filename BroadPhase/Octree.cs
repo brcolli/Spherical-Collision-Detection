@@ -1,16 +1,22 @@
 ﻿using System;
-using System.Linq;
 using UnityEngine;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net.NetworkInformation;
 
+/* A class using an octree for spatial subdivision of my universe. Used in collision detection
+ * as the broad phase to determine possible collisions, and send possible collisions to the narrow
+ * phase to be accurately determined. Implements lazy creation, generating a branch only when needed
+ * and deleting a branch only when needed (after a certain lifetime of being empty). Possible collisions
+ * are determined by traversing up the tree from a given cell and returning all objects in all its parents. */
+
 public class Octree : MonoBehaviour
 {
 
     private List<GameObject> _containedObjects; // The list of contained objects at a node
     private static Queue<GameObject> _pendingObjects = new Queue<GameObject>(); // Objects to be inserted later
+    private List<GameObject> _potentialCollisions = new List<GameObject>(); // List of objects that can potentially collide within this tree
     private int _maxCount = 5; // The maximum number of objects allowed to be contained in a node
     private int _minSize = 1; // The minimum allowed size TODO be aware of this (units)
     private Bounds _region; // Defined region
@@ -146,7 +152,7 @@ public class Octree : MonoBehaviour
         _ready = true;
     }
 
-    // Update tree based on game time
+    // Update tree based on game time, call this
     public void UpdateTree(Time time)
     {
         if (_built)
@@ -232,6 +238,8 @@ public class Octree : MonoBehaviour
             if (_parent == null) // root node
             {
                 // TODO this
+                _potentialCollisions.AddRange(CheckForPotentialCollisions(this)); // Get all potential collisions added to _potentialCollisions
+                SphericalCollisionCheck.CheckForSphericalCollisions(_potentialCollisions);
             }
         }
     }
@@ -321,6 +329,24 @@ public class Octree : MonoBehaviour
         // Either the object lies outside of enclosed box, or it is intersecting it. Must rebuild tree.
         else
             BuildTree();
+    }
+
+    // Recurse up to root node and add all potential collisions
+    private List<GameObject> CheckForPotentialCollisions(Octree currNode)
+    {
+        // Reached root
+        if (currNode._parent == null)
+            return currNode._containedObjects;
+
+        List<GameObject> potentialCollisions = new List<GameObject>();
+
+        // Add all objects contained in this layer
+        if (currNode._containedObjects.Count != 0)
+            potentialCollisions.AddRange(currNode._containedObjects);
+
+        // Add parent potential collisions and return
+        potentialCollisions.AddRange(CheckForPotentialCollisions(currNode._parent));
+        return potentialCollisions;
     }
 
     // Find dimensions of smallest possible bounding box necessary to enclose all objects in list
