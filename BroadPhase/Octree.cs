@@ -1,8 +1,10 @@
 ﻿using System;
+using System.Linq;
 using UnityEngine;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Net.NetworkInformation;
 
 public class Octree : MonoBehaviour
 {
@@ -144,6 +146,96 @@ public class Octree : MonoBehaviour
         _ready = true;
     }
 
+    // Update tree based on game time
+    public void UpdateTree(Time time)
+    {
+        if (_built)
+        {
+            // Subtract lifespan
+            if (_containedObjects.Count == 0)
+            {
+                if (_currLife == -1)
+                    _currLife = _lifeSpan;
+                else if (_currLife > 0)
+                    _currLife--;
+            }
+            else
+            {
+                if (_currLife != -1)
+                {
+                    if (_lifeSpan <= 64)
+                        _lifeSpan *= 2;
+                    _currLife = -1;
+                }
+            }
+            List<GameObject> movedObjects = new List<GameObject>(_containedObjects.Count);
+
+            foreach (GameObject obj in _containedObjects)
+            {
+                // See if object has moved TODO keep an eye on this
+                BodyPhysics bPhysics = obj.GetComponent<BodyPhysics>();
+                if (bPhysics.UpdateBodyPhysics())
+                    movedObjects.Add(obj);
+            }
+
+            // Remove dead objects
+            int numObjects = _containedObjects.Count;
+            for (int i = 0; i < numObjects; i++)
+            {
+                if (!_containedObjects[i].activeSelf) // TODO potentially change to activeInHierarchy
+                {
+                    if (movedObjects.Contains(_containedObjects[i]))
+                        movedObjects.Remove(_containedObjects[i]);
+                    _containedObjects.RemoveAt(i--);
+                    numObjects--;
+                }
+            }
+
+            // Update child nodes
+            for (int i = _activeNodes, j = 0; i > 0; i >>= 1, j++)
+            {
+                if ((i & 1) == 1)
+                    _children[j].UpdateTree(time);
+            }
+
+            // For all moved objects, move its position in the tree
+            foreach (GameObject obj in movedObjects)
+            {
+                Octree currNode = this;
+                /* Find out how far up the tree the object needs to be moved.
+                 * Move the object into an enclosing parent until full containment. */
+                while (!currNode._region.Contains(obj.transform.position) &&
+                       !(currNode._region.SqrDistance(obj.transform.position) >= Mathf.Pow((float) obj.GetComponent<Body>().Radius, 2)))
+                {
+                    if (currNode._parent != null)
+                        currNode = currNode._parent;
+                    else
+                        break;
+                }
+
+                // Remove from current node and place into new node
+                _containedObjects.Remove(obj);
+                currNode.Insert(obj);
+            }
+
+            // Prune dead branches
+            for (int i = _activeNodes, j = 0; i > 0; i >>= 1, j++)
+            {
+                if ((i & 1) == 1 && _children[j]._currLife == 0)
+                {
+                    _children[j] = null;
+                    _activeNodes ^= (byte) (1 << j);
+                }
+            }
+
+            // Look for collisions
+            if (_parent == null) // root node
+            {
+                // TODO this
+            }
+        }
+    }
+
     // Create child node with region and list of game objects
     private Octree CreateNode(Bounds region, List<GameObject> objectList)
     {
@@ -160,20 +252,160 @@ public class Octree : MonoBehaviour
     {
         List<GameObject> objectList = new List<GameObject>(1) {obj};
         Octree ot = new Octree(region, objectList) {_parent = this};
-
+        
         return ot;
     }
 
-    // Insert object into tree
+    // Insert object into tree at shallowest level possible
     private void Insert(GameObject body)
     {
-        
+        // If empty leaf node, insert and leave
+        if (_containedObjects.Count <= 1 && _activeNodes == 0)
+        {
+            _containedObjects.Add(body);
+            return;
+        }
+
+        // Check to see if enclosed region is greater than the minimum dimensions
+        Vector3 enclosed = _region.max - _region.min;
+        if (enclosed.x <= _minSize && enclosed.y <= _minSize && enclosed.z <= _minSize)
+        {
+            _containedObjects.Add(body);
+            return;
+        }
+
+        // Create subdivided regions for each octant in current region
+        List<Bounds> childRegions = new List<Bounds>(8);
+        childRegions[0] = (_children[0] != null) ? _children[0]._region : new Bounds((_region.center + _region.extents) / 2, _region.extents); // Top front right
+        childRegions[1] = (_children[1] != null) ? _children[1]._region :
+            new Bounds(new Vector3(_region.center.x - _region.extents.x, _region.center.y + _region.extents.y, _region.center.z + _region.extents.z) / 2, _region.extents); // Top front left
+        childRegions[2] = (_children[2] != null) ? _children[2]._region :
+            new Bounds(new Vector3(_region.center.x - _region.extents.x, _region.center.y + _region.extents.y, _region.center.z - _region.extents.z) / 2, _region.extents); // Top back left
+        childRegions[3] = (_children[3] != null) ? _children[3]._region :
+            new Bounds(new Vector3(_region.center.x + _region.extents.x, _region.center.y + _region.extents.y, _region.center.z - _region.extents.z) / 2, _region.extents); // Top back right
+        childRegions[4] = (_children[4] != null) ? _children[4]._region :
+            new Bounds(new Vector3(_region.center.x - _region.extents.x, _region.center.y + _region.extents.y, _region.center.z - _region.extents.z) / 2, _region.extents); // Bottom front right
+        childRegions[5] = (_children[5] != null) ? _children[5]._region :
+            new Bounds(new Vector3(_region.center.x - _region.extents.x, _region.center.y + _region.extents.y, _region.center.z - _region.extents.z) / 2, _region.extents); // Bottom front left
+        childRegions[6] = (_children[6] != null) ? _children[6]._region :
+            new Bounds(new Vector3(_region.center.x + _region.extents.x, _region.center.y + _region.extents.y, _region.center.z - _region.extents.z) / 2, _region.extents); // Bottom back left
+        childRegions[7] = (_children[7] != null) ? _children[7]._region :
+            new Bounds(new Vector3(_region.center.x - _region.extents.x, _region.center.y + _region.extents.y, _region.center.z - _region.extents.z) / 2, _region.extents); // Bottom back right
+
+        // Is it completely contained?
+        if (_region.Contains(body.transform.position) &&
+            (_region.SqrDistance(body.transform.position) >= Mathf.Pow((float) body.GetComponent<Body>().Radius, 2)))
+        {
+            bool found = false;
+
+            // Attempt to placec in child node, else place in current node
+            for (int i = 0; i < 8; i++)
+            {
+                if (childRegions[i].Contains(body.transform.position) &&
+                    (childRegions[i].SqrDistance(body.transform.position) >=
+                     Mathf.Pow((float) body.GetComponent<Body>().Radius, 2)))
+                {
+                    if (_children[i] != null)
+                        _children[i].Insert(body); // Add item to tree and let child work it out
+                    else
+                    {
+                        _children[i] = CreateNode(childRegions[i], body); // Create new tree
+                        _activeNodes |= (byte) (1 << i);
+                    }
+                    found = true;
+                }
+            }
+            if (!found)
+                _containedObjects.Add(body);
+        }
+        // Either the object lies outside of enclosed box, or it is intersecting it. Must rebuild tree.
+        else
+            BuildTree();
+    }
+
+    // Find dimensions of smallest possible bounding box necessary to enclose all objects in list
+    private void FindSmallestBox()
+    {
+        Vector3 globalMin = Vector3.zero, globalMax = Vector3.zero;
+
+        // Find extremes of each contained object
+        foreach (GameObject obj in _containedObjects)
+        {
+            Vector3 localMin = Vector3.zero, localMax = Vector3.zero;
+            Bounds objBounds = obj.GetComponent<Bounds>();
+
+            if (Math.Abs(objBounds.size.magnitude) < 0.001)
+                throw new Exception("Must have a bounding region.");
+
+            if (objBounds.max != objBounds.min)
+            {
+                localMin = objBounds.min;
+                localMax = objBounds.max;
+            }
+
+            if (localMin.x < globalMin.x)
+                globalMin.x = localMin.x;
+            if (localMin.y < globalMin.y)
+                globalMin.y = localMin.y;
+            if (localMin.z < globalMin.z)
+                globalMin.z = localMin.z;
+
+            if (localMax.x < globalMax.x)
+                globalMax.x = localMax.x;
+            if (localMax.y < globalMax.y)
+                globalMax.y = localMax.y;
+            if (localMax.z < globalMax.z)
+                globalMax.z = localMax.z;
+        }
+
+        _region.min = globalMin;
+        _region.max = globalMax;
     }
 
     // Finds smallest cube with power of 2 size
     private void FindSmallestBounds()
     {
+        FindSmallestBox();
 
+        // Find min offset
+        Vector3 offset = _region.min - Vector3.zero;
+        _region.min += offset;
+        _region.max += offset;
+
+        // Find nearest power of two for max values
+        int high = (int) Mathf.Floor(Mathf.Max(Mathf.Max(_region.max.x, _region.max.y), _region.max.z));
+
+        // Is it power of 2?
+        for (int b = 0; b < 32; b++)
+        {
+            if (high == 1 << b)
+            {
+                _region.max = new Vector3(high, high, high);
+
+                _region.min -= offset;
+                _region.max -= offset;
+                return;
+            }
+        }
+
+        // Gets MSB, essentially ceiling but with bits to get power of 2
+        int msb = GetMSB(high);
+        _region.max = new Vector3(msb, msb, msb);
+
+        _region.min -= offset;
+        _region.max -= offset;
+    }
+
+    // Return Most Significant Bit (MSB)
+    private int GetMSB(int num)
+    {
+        int bitPos = 0, msb = num;
+        while (msb != 0)
+        {
+            bitPos++;
+            msb >>= 1;
+        }
+        return (num & (1 << bitPos-1));
     }
 
     /* Getters and setters */
