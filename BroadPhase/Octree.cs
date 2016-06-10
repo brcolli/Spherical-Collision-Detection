@@ -17,7 +17,7 @@ public class Octree : MonoBehaviour
     private List<GameObject> _containedObjects; // The list of contained objects at a node
     private static Queue<GameObject> _pendingObjects = new Queue<GameObject>(); // Objects to be inserted later
     private List<GameObject> _potentialCollisions = new List<GameObject>(); // List of objects that can potentially collide within this tree
-    private int _maxCount = 5; // The maximum number of objects allowed to be contained in a node
+    //private int _maxCount = 5; // The maximum number of objects allowed to be contained in a node
     private int _minSize = 1; // The minimum allowed size TODO be aware of this (units)
     private Bounds _region; // Defined region
     private byte _activeNodes = 0; // 8 bits defining which children are being used
@@ -28,7 +28,7 @@ public class Octree : MonoBehaviour
     private Octree _parent;
     private List<Octree> _children = new List<Octree>(8);
 
-    private static bool _ready = false; // Whether or not tree has pending objects
+    //private static bool _ready = false; // Whether or not tree has pending objects
     private static bool _built = false; // Whether or not tree already exists
 
     /* Constructors */
@@ -70,7 +70,7 @@ public class Octree : MonoBehaviour
             while (_pendingObjects.Count != 0)
                 Insert(_pendingObjects.Dequeue());
         }
-        _ready = true;
+        //_ready = true;
     }
 
     // Build tree based on pending objects
@@ -149,7 +149,7 @@ public class Octree : MonoBehaviour
         }
 
         _built = true;
-        _ready = true;
+        //_ready = true;
     }
 
     // Update tree based on game time, call this
@@ -179,8 +179,7 @@ public class Octree : MonoBehaviour
             foreach (GameObject obj in _containedObjects)
             {
                 // See if object has moved TODO keep an eye on this
-                BodyPhysics bPhysics = obj.GetComponent<BodyPhysics>();
-                if (bPhysics.UpdateBodyPhysics())
+                if (BodyPhysics.TestMovement(obj))
                     movedObjects.Add(obj);
             }
 
